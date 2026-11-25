@@ -136,8 +136,19 @@ async def fetch_today_appointments():
 
 # ── DISCORD ────────────────────────────────────────────────────────────
 intents = discord.Intents.default(); intents.members = True
-bot = discord.Client(intents=intents)
+
+class ValeriaBot(discord.Client):
+    def __init__(self):
+        super().__init__(intents=intents)
+        self.tree = discord.app_commands.CommandTree(self)
+    async def setup_hook(self):
+        guild = discord.Object(id=GUILD_ID)
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+
+bot = ValeriaBot()
 _sent = set()
+ADMIN = discord.app_commands.checks.has_permissions(manage_guild=True)
 
 def find_member(guild, username):
     if not username: return None
@@ -196,5 +207,77 @@ async def _w(): await bot.wait_until_ready()
 async def on_ready():
     print(f"Valeria's Bot conectado como {bot.user}")
     if not scheduler.is_running(): scheduler.start()
+
+
+# ── COMANDOS DE PRUEBA (solo admins) ───────────────────────────────────
+@bot.tree.command(name="test_dm", description="[Prueba] El bot te envía a TI los dos mensajes de recordatorio")
+@ADMIN
+async def test_dm(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    ok1 = await dm(interaction.user, "🧪 (PRUEBA)\n" + msg_4h("3:00 PM"))
+    ok2 = await dm(interaction.user, "🧪 (PRUEBA)\n" + MSG_START)
+    await interaction.followup.send(
+        ("✅ Te envié los 2 mensajes por DM." if ok1 and ok2
+         else "⚠️ No pude enviarte DM. Revisa que tengas los MD abiertos para este servidor."),
+        ephemeral=True)
+
+@bot.tree.command(name="test_cita", description="[Prueba] Simula el aviso a los Therapist con el botón ✅")
+@discord.app_commands.describe(nombre="Nombre del paciente de prueba")
+@ADMIN
+async def test_cita(interaction: discord.Interaction, nombre: str = "Paciente de Prueba"):
+    await interaction.response.defer(ephemeral=True)
+    ths = therapists(interaction.guild)
+    if not ths:
+        await interaction.followup.send(f"⚠️ No encontré a nadie con el rol **{THERAPIST_ROLE}**.", ephemeral=True); return
+    n = 0
+    for th in ths:
+        if await dm(th, "🧪 (PRUEBA)\n" + msg_therapist(nombre), view=AttendedView(nombre)): n += 1
+    await interaction.followup.send(f"✅ Enviado a {n} Therapist(s) con el botón de atendido.", ephemeral=True)
+
+@bot.tree.command(name="test_hoja", description="[Prueba] Lee la hoja y muestra las citas de HOY (sin enviar nada)")
+@ADMIN
+async def test_hoja(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        appts = await fetch_today_appointments()
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error al leer la hoja: `{e}`", ephemeral=True); return
+    if not appts:
+        await interaction.followup.send("No encontré citas para **hoy** en la pestaña del mes.", ephemeral=True); return
+    lines = []
+    for a in appts:
+        m = find_member(interaction.guild, a["user"]) if a["user"] else None
+        estado = f"→ {m.mention}" if m else (f"⚠️ usuario '{a['user']}' no está en el server" if a["user"] else "❌ sin usuario de Discord (no está en Form_Responses)")
+        lines.append(f"• **{a['name']}** — {a['when'].strftime('%d/%m %I:%M %p')} {estado}")
+    await interaction.followup.send("**Citas de hoy:**\n" + "\n".join(lines[:20]), ephemeral=True)
+
+@bot.tree.command(name="test_proximas", description="[Prueba] Muestra las próximas citas de hoy y a qué hora avisa")
+@ADMIN
+async def test_proximas(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        appts = await fetch_today_appointments()
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: `{e}`", ephemeral=True); return
+    now = datetime.now(VET)
+    fut = sorted([a for a in appts if a["when"] >= now], key=lambda x: x["when"])
+    if not fut:
+        await interaction.followup.send("No quedan citas por venir hoy.", ephemeral=True); return
+    lines = []
+    for a in fut[:10]:
+        rec4 = (a["when"] - __import__("datetime").timedelta(hours=REMINDER_HOURS_BEFORE)).strftime("%I:%M %p").lstrip("0")
+        lines.append(f"• **{a['name']}** a las {a['hora_txt']} · recordatorio 4h a las {rec4}")
+    await interaction.followup.send("**Próximas citas de hoy:**\n" + "\n".join(lines), ephemeral=True)
+
+@test_dm.error
+@test_cita.error
+@test_hoja.error
+@test_proximas.error
+async def _test_err(interaction: discord.Interaction, error):
+    try:
+        await interaction.response.send_message("⛔ Solo admins pueden usar los comandos de prueba.", ephemeral=True)
+    except Exception:
+        pass
+
 
 bot.run(TOKEN)
