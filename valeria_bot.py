@@ -183,15 +183,34 @@ bot = ValeriaBot()
 _sent = set()
 ADMIN = discord.app_commands.checks.has_permissions(manage_guild=True)
 
-def find_member(guild, username):
+def _member_matches(m, u, base):
+    names = {norm(m.name)}
+    if m.global_name: names.add(norm(m.global_name))
+    if m.nick: names.add(norm(m.nick))
+    return u in names or base in names
+
+async def find_member(guild, username):
     if not username: return None
     u = norm(username).lstrip("@"); base = u.split("#")[0]
+    # 1) caché local
     for m in guild.members:
-        names = {norm(m.name)}
-        if m.global_name: names.add(norm(m.global_name))
-        if m.nick: names.add(norm(m.nick))
-        if u in names or base in names:
+        if _member_matches(m, u, base):
             return m
+    # 2) buscar en vivo en el servidor por nombre
+    try:
+        found = await guild.query_members(query=base, limit=20)
+        for m in found:
+            if _member_matches(m, u, base):
+                return m
+    except Exception as e:
+        print(f"[BUSCAR] query_members falló: {e}")
+    # 3) último intento: recorrer todos los miembros (fetch)
+    try:
+        async for m in guild.fetch_members(limit=None):
+            if _member_matches(m, u, base):
+                return m
+    except Exception as e:
+        print(f"[BUSCAR] fetch_members falló: {e}")
     return None
 
 async def dm(member, content, view=None):
@@ -218,7 +237,7 @@ async def scheduler():
     if not guild: print("[BOT] servidor no encontrado"); return
     now = datetime.now(VET)
     for a in appts:
-        member = find_member(guild, a["user"]) if (a["user"] and a["user"] != "AMBIGUO") else None
+        member = (await find_member(guild, a["user"])) if (a["user"] and a["user"] != "AMBIGUO") else None
         diff = (a["when"] - now).total_seconds()/60.0
         k4 = (a["id"],"4h")
         if 0 <= diff - REMINDER_HOURS_BEFORE*60 < 1 and k4 not in _sent:
@@ -239,6 +258,15 @@ async def _w(): await bot.wait_until_ready()
 @bot.event
 async def on_ready():
     print(f"Valeria's Bot conectado como {bot.user}")
+    g = bot.get_guild(GUILD_ID)
+    if g:
+        try:
+            await g.chunk()
+            print(f"[BOT] lista de miembros cargada: {len(g.members)}/{g.member_count}")
+        except Exception as e:
+            print(f"[BOT] no pude cargar miembros con chunk(): {e}")
+    else:
+        print("[BOT] ⚠️ no encuentro el servidor (revisa GUILD_ID o que el bot esté dentro)")
     if not scheduler.is_running(): scheduler.start()
 
 
@@ -282,7 +310,7 @@ async def test_hoja(interaction: discord.Interaction):
         if a["user"] == "AMBIGUO":
             estado = "⚠️ varios posibles en Form_Responses (escribe el nombre completo)"
         elif a["user"]:
-            m = find_member(interaction.guild, a["user"])
+            m = await find_member(interaction.guild, a["user"])
             estado = f"→ {m.mention}" if m else f"→ @{a['user']} (en la hoja, pero no está en el server)"
         else:
             estado = "❌ sin usuario de Discord (no está en Form_Responses)"
@@ -316,6 +344,38 @@ async def _test_err(interaction: discord.Interaction, error):
         await interaction.response.send_message("⛔ Solo admins pueden usar los comandos de prueba.", ephemeral=True)
     except Exception:
         pass
+
+
+
+@bot.tree.command(name="test_buscar", description="[Prueba] Diagnostica si el bot puede encontrar a un usuario")
+@discord.app_commands.describe(usuario="Usuario de Discord a buscar (ej. erenx29)")
+@ADMIN
+async def test_buscar(interaction: discord.Interaction, usuario: str):
+    await interaction.response.defer(ephemeral=True)
+    g = interaction.guild
+    u = norm(usuario).lstrip("@"); base = u.split("#")[0]
+    report = [f"🔎 Buscando **{usuario}**", f"• Miembros en caché: **{len(g.members)}** de {g.member_count}", f"• g.chunked: {g.chunked}"]
+    # 1) cache
+    hit = next((m for m in g.members if _member_matches(m, u, base)), None)
+    report.append(f"• En caché: {'✅ '+hit.mention if hit else '❌ no'}")
+    # 2) query_members
+    try:
+        found = await g.query_members(query=base, limit=20)
+        names = ", ".join(f"{m.name}" for m in found) or "(vacío)"
+        qhit = next((m for m in found if _member_matches(m, u, base)), None)
+        report.append(f"• query_members devolvió: {names}")
+        report.append(f"• Coincidencia en query: {'✅ '+qhit.mention if qhit else '❌ no'}")
+    except Exception as e:
+        report.append(f"• query_members ERROR: `{e}`")
+    # resultado final usando la función real
+    final = await find_member(g, usuario)
+    report.append(f"\n**Resultado final:** {final.mention if final else '❌ NO encontrado'}")
+    await interaction.followup.send("\n".join(report), ephemeral=True)
+
+@test_buscar.error
+async def _tb_err(interaction, error):
+    try: await interaction.response.send_message("⛔ Solo admins.", ephemeral=True)
+    except Exception: pass
 
 
 bot.run(TOKEN)
