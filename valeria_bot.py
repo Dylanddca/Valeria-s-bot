@@ -378,4 +378,25 @@ async def _tb_err(interaction, error):
     except Exception: pass
 
 
+
+@bot.tree.command(name="test_mensaje", description="[Prueba] Envía un DM de prueba a cualquier miembro del servidor")
+@discord.app_commands.describe(persona="A quién enviarle el mensaje de prueba", texto="Mensaje (opcional)")
+@ADMIN
+async def test_mensaje(interaction: discord.Interaction, persona: discord.Member, texto: str = None):
+    await interaction.response.defer(ephemeral=True)
+    contenido = texto or ("🧪 (PRUEBA de Valeria's Bot)\n" + MSG_START)
+    ok = await dm(persona, contenido)
+    if ok:
+        await interaction.followup.send(f"✅ Mensaje enviado a {persona.mention} por DM.", ephemeral=True)
+    else:
+        await interaction.followup.send(
+            f"⚠️ No pude enviar DM a {persona.mention}. Puede tener los mensajes directos cerrados para este servidor.",
+            ephemeral=True)
+
+@test_mensaje.error
+async def _tm_err(interaction, error):
+    try: await interaction.response.send_message("⛔ Solo admins.", ephemeral=True)
+    except Exception: pass
+
+
 bot.run(TOKEN)
