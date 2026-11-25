@@ -105,15 +105,47 @@ def rows_from(text: str, header_must_have: str):
     return out
 
 async def discord_directory():
-    """{nombre_normalizado: usuario_discord} desde Form_Responses."""
+    """Lista de personas de Form_Responses con sus claves de nombre, para
+    cruzarlas con el 'Paciente' de la pestaña del mes aunque esté escrito corto."""
     text = await get_csv(GID_FORM)
-    d = {}
+    people = []
     for r in rows_from(text, FR_NAME):
-        full = norm(f"{r.get(FR_NAME,'')} {r.get(FR_SURNAME,'')}")
+        nombre = (r.get(FR_NAME,"") or "").strip()
+        apellido = (r.get(FR_SURNAME,"") or "").strip()
         user = (r.get(FR_DISCORD,"") or "").strip().lstrip("@")
-        if full and user:
-            d[full] = user
-    return d
+        if not user: continue
+        full = f"{nombre} {apellido}".strip()
+        keys = set(filter(None, [norm(full), norm(nombre), norm(apellido),
+                                 norm(f"{apellido} {nombre}")]))
+        people.append({"full": full, "user": user, "keys": keys,
+                       "tokens": set(norm(full).split())})
+    return people
+
+def match_user(directory, patient_name):
+    """Encuentra el usuario de Discord para el nombre del paciente.
+    Prueba, en orden: igualdad exacta de alguna clave → el nombre del
+    paciente contenido en el nombre completo → todas las palabras del
+    paciente presentes en el nombre completo."""
+    pn = norm(patient_name)
+    if not pn: return None, None
+    # 1) coincidencia exacta con alguna clave
+    for p in directory:
+        if pn in p["keys"]:
+            return p["user"], p["full"]
+    ptoks = set(pn.split())
+    # 2) el nombre del paciente está dentro del nombre completo, o viceversa
+    cands = []
+    for p in directory:
+        fn = norm(p["full"])
+        if pn and (pn in fn or fn in pn):
+            cands.append(p)
+        elif ptoks and ptoks.issubset(p["tokens"]):
+            cands.append(p)
+    if len(cands) == 1:
+        return cands[0]["user"], cands[0]["full"]
+    if len(cands) > 1:
+        return "AMBIGUO", None   # varios posibles → no adivinar
+    return None, None
 
 async def fetch_today_appointments():
     key = datetime.now(VET).strftime("%Y-%m")
@@ -129,10 +161,10 @@ async def fetch_today_appointments():
         dt = parse_dt(r.get(MM_DATETIME,""))
         if not (name and dt): continue
         if dt.date() != today: continue
-        user = directory.get(norm(name))
+        user, matched = match_user(directory, name)
         when = dt.replace(tzinfo=VET)
         out.append({"id": f"{key}|{name}|{r.get(MM_DATETIME,'')}", "name": name,
-                    "user": user, "when": when, "hora_txt": fmt_time(when)})
+                    "user": user, "matched": matched, "when": when, "hora_txt": fmt_time(when)})
     return out
 
 # ── DISCORD ────────────────────────────────────────────────────────────
@@ -186,7 +218,7 @@ async def scheduler():
     if not guild: print("[BOT] servidor no encontrado"); return
     now = datetime.now(VET)
     for a in appts:
-        member = find_member(guild, a["user"]) if a["user"] else None
+        member = find_member(guild, a["user"]) if (a["user"] and a["user"] != "AMBIGUO") else None
         diff = (a["when"] - now).total_seconds()/60.0
         k4 = (a["id"],"4h")
         if 0 <= diff - REMINDER_HOURS_BEFORE*60 < 1 and k4 not in _sent:
@@ -247,8 +279,13 @@ async def test_hoja(interaction: discord.Interaction):
         await interaction.followup.send("No encontré citas para **hoy** en la pestaña del mes.", ephemeral=True); return
     lines = []
     for a in appts:
-        m = find_member(interaction.guild, a["user"]) if a["user"] else None
-        estado = f"→ {m.mention}" if m else (f"⚠️ usuario '{a['user']}' no está en el server" if a["user"] else "❌ sin usuario de Discord (no está en Form_Responses)")
+        if a["user"] == "AMBIGUO":
+            estado = "⚠️ varios posibles en Form_Responses (escribe el nombre completo)"
+        elif a["user"]:
+            m = find_member(interaction.guild, a["user"])
+            estado = f"→ {m.mention}" if m else f"→ @{a['user']} (en la hoja, pero no está en el server)"
+        else:
+            estado = "❌ sin usuario de Discord (no está en Form_Responses)"
         lines.append(f"• **{a['name']}** — {a['when'].strftime('%d/%m %I:%M %p')} {estado}")
     await interaction.followup.send("**Citas de hoy:**\n" + "\n".join(lines[:20]), ephemeral=True)
 
