@@ -24,7 +24,8 @@ from discord.ext import tasks
 TOKEN          = os.environ["VALERIA_BOT_TOKEN"]
 GUILD_ID       = 1498414113703989258
 VET            = ZoneInfo("America/Caracas")
-THERAPIST_ROLE = "Therapist"               # el aviso "ya es hora" va a todos los que tengan este rol
+THERAPIST_ROLE    = "Therapist"            # (respaldo) por si no se usa el ID
+THERAPIST_ROLE_ID = 1573830639612854362    # rol que recibe el aviso "ya es hora"
 REMINDER_HOURS_BEFORE = 4
 
 # ID de la hoja (el de la URL del navegador: /spreadsheets/d/<ESTE>/edit)
@@ -174,7 +175,7 @@ class AttendedView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
 def therapists(guild):
-    role = discord.utils.get(guild.roles, name=THERAPIST_ROLE)
+    role = guild.get_role(THERAPIST_ROLE_ID) or discord.utils.get(guild.roles, name=THERAPIST_ROLE)
     return list(role.members) if role else []
 
 @tasks.loop(minutes=1)
